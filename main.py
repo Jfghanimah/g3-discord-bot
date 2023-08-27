@@ -2,6 +2,13 @@
 
 import discord
 
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+token = os.getenv('BOT_SECRET_TOKEN')
+
+
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -19,4 +26,4 @@ async def on_message(message):
     if message.content.startswith('G3'):
         await message.channel.send('G3')
 
-client.run("MTE0NTIxNDAxMzU1NTM2Mzg5MQ.Gk3bvq.WgmtT5AOg_jGM8ws5PIz_BRLAXbG5Cz8AKxDZo")
+client.run(token)
