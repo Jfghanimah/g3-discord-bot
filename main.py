@@ -89,7 +89,7 @@ async def on_message(message):
             reply = response.choices[0].message.content.strip()
             #await message.channel.send(reply)
         
-            max_length = 1500
+            max_length = 1900
             while reply:
                 chunk = reply[:max_length]
                 await message.channel.send(chunk)
