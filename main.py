@@ -109,29 +109,15 @@ async def on_message(message: discord.Message):
                     }
                 )
 
-                response_stream = await chat_session.send_message_stream(
+                # Use the non-streaming method to get the full response at once.
+                response = await chat_session.send_message(
                     # The message content is already part of the history, so we can send an empty message
                     # to just get the response to the last user message in the history.
                     message=""
                 )
 
-                reply = ""
-                tool_use_notified = False
-                async for chunk in response_stream:
-                    # Check if the model is making a function call (i.e., using a tool) and notify the user
-                    if not tool_use_notified and chunk.function_calls:
-                        logging.info(f"Model is attempting to use tools: {chunk.function_calls}")
-                        tool_names = [fc.name for fc in chunk.function_calls]
-                        if tool_names:
-                            await message.channel.send(f"_Using tools ({', '.join(tool_names)}) to find the answer..._")
-                        else:
-                            # Fallback if for some reason function_calls is not empty but names are missing
-                            await message.channel.send("_Using tools to find the answer..._")
-                        tool_use_notified = True
-
-                    if chunk.text:
-                        reply += chunk.text
-                
+                # The full reply is available directly in the response object.
+                reply = response.text
                 reply = reply.strip()
             
                 # Split the response into chunks to fit within Discord's character limit (1900 chars).
