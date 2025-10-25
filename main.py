@@ -84,7 +84,7 @@ async def on_message(message):
                 logging.info(f'{message.author} sent LLM request.')
                 
                 # Pass the system instruction directly as a dictionary in the config.
-                chat_session = await genai_client.aio.chats.create(
+                chat_session = genai_client.aio.chats.create(
                     model=MODEL_NAME, 
                     history=gemini_conversation, 
                     config={'system_instruction': SYSTEM_INSTRUCTION})
