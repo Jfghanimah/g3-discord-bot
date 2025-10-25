@@ -84,20 +84,23 @@ async def on_message(message):
                 logging.info(f'{message.author} sent LLM request.')
                 
                 # Pass the system instruction directly as a dictionary in the config.
+                # The tool configuration should also be part of the main config object.
                 chat_session = genai_client.aio.chats.create(
-                    model=MODEL_NAME, 
-                    history=gemini_conversation, 
-                    config={'system_instruction': SYSTEM_INSTRUCTION})
-
-                # Define the tools to be used for this specific message.
-                tool_config = google_types.ToolConfig(
-                    google_search=google_types.GoogleSearch(),
-                    url_context=google_types.UrlContext(),
+                    model=MODEL_NAME,
+                    history=gemini_conversation,
+                    config={
+                        'system_instruction': SYSTEM_INSTRUCTION,
+                        'tools': [
+                            google_types.Tool(google_search=google_types.GoogleSearch()),
+                            google_types.Tool(url_context=google_types.UrlContext())
+                        ]
+                    }
                 )
 
                 response_stream = await chat_session.send_message_stream(
-                    message=f"{message.author.display_name} (<@{message.author.id}>): {message.content}",
-                    tool_config=tool_config
+                    # The message content is already part of the history, so we can send an empty message
+                    # to just get the response to the last user message in the history.
+                    message=""
                 )
 
                 reply = ""
