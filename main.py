@@ -79,24 +79,24 @@ async def on_message(message):
         messages_history.reverse()
         gemini_conversation = await build_gemini_conversation(messages_history)
 
-        # Prepend the system instruction to the conversation history
-        # The new SDK pattern includes system instructions as part of the chat history.
-        gemini_conversation.insert(0, {'role': 'system', 'parts': [SYSTEM_INSTRUCTION]})
+        # For chat sessions, system instructions and tools are set in the GenerationConfig.
+        # The `tools` parameter enables automatic function calling for the specified tools.
+        generation_config = google_types.GenerationConfig(
+            system_instruction=SYSTEM_INSTRUCTION,
+            tools=[
+                google_types.Tool(google_search=google_types.GoogleSearch()),
+                google_types.Tool(url_context=google_types.UrlContext()),
+            ]
+        )
 
         async with message.channel.typing():
             try:
                 logging.info(f'{message.author} sent LLM request.')
-                chat_session = await genai_client.aio.chats.create(model=MODEL_NAME, history=gemini_conversation)
                 
-                # Enable both Google Search and URL Context tools for this message
-                tool_config = google_types.ToolConfig(
-                    google_search=google_types.GoogleSearch(),
-                    url_context=google_types.UrlContext()
-                )
+                chat_session = await genai_client.aio.chats.create(model=MODEL_NAME, history=gemini_conversation, generation_config=generation_config)
 
                 response_stream = await chat_session.send_message_stream(
-                    message=f"{message.author.display_name} (<@{message.author.id}>): {message.content}",
-                    tool_config=tool_config
+                    message=f"{message.author.display_name} (<@{message.author.id}>): {message.content}"
                 )
 
                 reply = ""
