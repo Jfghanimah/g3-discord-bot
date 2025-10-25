@@ -120,6 +120,7 @@ async def on_message(message: discord.Message):
                 async for chunk in response_stream:
                     # Check if the model is making a function call (i.e., using a tool) and notify the user
                     if not tool_use_notified and chunk.function_calls:
+                        logging.info(f"Model is attempting to use tools: {chunk.function_calls}")
                         tool_names = [fc.name for fc in chunk.function_calls]
                         if tool_names:
                             await message.channel.send(f"_Using tools ({', '.join(tool_names)}) to find the answer..._")
