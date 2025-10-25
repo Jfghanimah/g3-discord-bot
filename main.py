@@ -8,6 +8,12 @@ from google.genai import types as google_types
 # Load environment variables
 load_dotenv()
 token = os.getenv('BOT_SECRET_TOKEN')
+gemini_api_key = os.getenv('GEMINI_API_KEY')
+
+# Add a check to ensure the API key is loaded.
+if not gemini_api_key:
+    logging.critical("GEMINI_API_KEY environment variable not found. Please set it in your .env file.")
+    exit()
 
 # Configure logging to show timestamps and log levels.
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -34,10 +40,13 @@ SYSTEM_INSTRUCTION = (
     "Emulate the natural, messy flow of real group chat convo. Dont always write full sentences. Make use of fragments and short messages when appropriate."
 )
 
-async def build_gemini_conversation(message_history):
+async def build_gemini_conversation(
+    message_history: list[discord.Message]
+) -> list[dict]:
     """Builds a conversation history formatted for the Gemini API, merging consecutive roles."""
     gemini_conversation = []
     for historical_msg in message_history:
+        # Skip messages that are empty or just whitespace
         if not historical_msg.content.strip():
             continue
 
@@ -59,8 +68,8 @@ async def build_gemini_conversation(message_history):
 # Initialize the Discord client
 intents = discord.Intents.default()
 intents.message_content = True
-discord_client = discord.Client(intents=intents) # The Discord client
-genai_client = google_genai.Client() # The new, central GenAI client
+discord_client = discord.Client(intents=intents)  # The Discord client
+genai_client = google_genai.Client(api_key=gemini_api_key)  # The new, central GenAI client
 
 @discord_client.event
 async def on_ready():
@@ -68,7 +77,10 @@ async def on_ready():
 
 
 @discord_client.event
-async def on_message(message):
+async def on_message(message: discord.Message):
+    """
+    Handles incoming Discord messages, processing them with the Gemini LLM if the bot is mentioned.
+    """
 
     if message.author == discord_client.user:
         return
@@ -82,7 +94,7 @@ async def on_message(message):
         async with message.channel.typing():
             try:
                 logging.info(f'{message.author} sent LLM request.')
-                
+
                 # Pass the system instruction directly as a dictionary in the config.
                 # The tool configuration should also be part of the main config object.
                 chat_session = genai_client.aio.chats.create(
@@ -106,11 +118,14 @@ async def on_message(message):
                 reply = ""
                 tool_use_notified = False
                 async for chunk in response_stream:
-                    # Check if the model is making a function call (i.e., using a tool)
+                    # Check if the model is making a function call (i.e., using a tool) and notify the user
                     if not tool_use_notified and chunk.function_calls:
-                        # Notify the user that a tool is being used.
-                        # We can make this more specific if we check the function name.
-                        await message.channel.send("_Using tools to find the answer..._")
+                        tool_names = [fc.name for fc in chunk.function_calls]
+                        if tool_names:
+                            await message.channel.send(f"_Using tools ({', '.join(tool_names)}) to find the answer..._")
+                        else:
+                            # Fallback if for some reason function_calls is not empty but names are missing
+                            await message.channel.send("_Using tools to find the answer..._")
                         tool_use_notified = True
 
                     if chunk.text:
@@ -118,12 +133,18 @@ async def on_message(message):
                 
                 reply = reply.strip()
             
-                # Split the response into chunks to fit within Discord's character limit.
+                # Split the response into chunks to fit within Discord's character limit (1900 chars).
                 max_length = 1900
                 while reply:
                     chunk = reply[:max_length]
                     await message.channel.send(chunk)
                     reply = reply[max_length:]
+            except google_genai.APIError as e:
+                logging.error(f"Gemini API Error: {e}", exc_info=True)
+                await message.channel.send(f"Error communicating with the LLM: {e.message}")
+            except discord.DiscordException as e:
+                logging.error(f"Discord API Error: {e}", exc_info=True)
+                await message.channel.send(f"A Discord-related error occurred: {e}")
     
             except Exception as e:
                 logging.exception("An error occurred while processing a message.")
