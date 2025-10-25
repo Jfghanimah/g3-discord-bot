@@ -1,12 +1,12 @@
 import os
-from openai import OpenAI
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import discord
 from random import random
 
 # Load environment variables
 load_dotenv()
-openai_client = OpenAI(api_key=os.getenv('OPENAI_KEY'))
+openai_client = AsyncOpenAI(api_key=os.getenv('OPENAI_KEY'))
 token = os.getenv('BOT_SECRET_TOKEN')
 
 # Initialize the Discord client
@@ -79,24 +79,24 @@ async def on_message(message):
                     "content": f"{historical_msg.author.display_name} (<@{historical_msg.author.id}>): {historical_msg.content}"
                 })
 
-        try:
-            print(f'{message.author} sent LLM request.')
-            response = openai_client.chat.completions.create(
-                model="gpt-4.1",
-                messages=conversation,
-                max_completion_tokens=2000
-            )
-            reply = response.choices[0].message.content.strip()
-            #await message.channel.send(reply)
-        
-            max_length = 1900
-            while reply:
-                chunk = reply[:max_length]
-                await message.channel.send(chunk)
-                reply = reply[max_length:]
-
-        except Exception as e:
-            await message.channel.send(f"Error with LLM: {e}")
+        async with message.channel.typing():
+            try:
+                print(f'{message.author} sent LLM request.')
+                response = await openai_client.chat.completions.create(
+                    model="gpt-4.1",
+                    messages=conversation,
+                    max_completion_tokens=2000
+                )
+                reply = response.choices[0].message.content.strip()
+            
+                max_length = 1900
+                while reply:
+                    chunk = reply[:max_length]
+                    await message.channel.send(chunk)
+                    reply = reply[max_length:]
+    
+            except Exception as e:
+                await message.channel.send(f"Error with LLM: {e}")
 
 
 discord_client.run(token)
