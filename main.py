@@ -51,10 +51,8 @@ async def build_gemini_conversation(message_history):
 
         # Merge consecutive messages from the same role to maintain the alternating structure
         if gemini_conversation and gemini_conversation[-1]['role'] == role:
-            gemini_conversation[-1]['parts'][-1] += f"\n{content}"
             gemini_conversation[-1]['parts'][-1]['text'] += f"\n{content}"
         else:
-            gemini_conversation.append({'role': role, 'parts': [content]})
             gemini_conversation.append({'role': role, 'parts': [{'text': content}]})
     return gemini_conversation
 
