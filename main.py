@@ -83,14 +83,11 @@ async def on_message(message):
             try:
                 logging.info(f'{message.author} sent LLM request.')
                 
-                # Pass the system instruction in the config object, not in the history.
-                chat_config = google_types.CreateChatConfig(
-                    system_instruction=SYSTEM_INSTRUCTION
-                )
+                # Pass the system instruction directly as a dictionary in the config.
                 chat_session = await genai_client.aio.chats.create(
                     model=MODEL_NAME, 
                     history=gemini_conversation, 
-                    config=chat_config)
+                    config={'system_instruction': SYSTEM_INSTRUCTION})
 
                 # Define the tools to be used for this specific message.
                 tool_config = google_types.ToolConfig(
