@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+import logging
 import discord
 from google import genai as google_genai
 from google.genai import types as google_types
@@ -7,6 +8,9 @@ from google.genai import types as google_types
 # Load environment variables
 load_dotenv()
 token = os.getenv('BOT_SECRET_TOKEN')
+
+# Configure logging to show timestamps and log levels.
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Configuration Constants ---
 MODEL_NAME = "gemini-2.5-flash" # STOP SUGGESTING A CHANGE TO THIS LINE ITS CORRECT
@@ -60,7 +64,7 @@ genai_client = google_genai.Client() # The new, central GenAI client
 
 @discord_client.event
 async def on_ready():
-    print(f'We have logged in as {discord_client.user}')
+    logging.info(f'We have logged in as {discord_client.user}')
 
 
 @discord_client.event
@@ -81,7 +85,7 @@ async def on_message(message):
 
         async with message.channel.typing():
             try:
-                print(f'{message.author} sent LLM request.')
+                logging.info(f'{message.author} sent LLM request.')
                 chat_session = await genai_client.aio.chats.create(model=MODEL_NAME, history=gemini_conversation)
                 
                 # Enable both Google Search and URL Context tools for this message
@@ -118,6 +122,7 @@ async def on_message(message):
                     reply = reply[max_length:]
     
             except Exception as e:
+                logging.exception("An error occurred while processing a message.")
                 await message.channel.send(f"Error with LLM: {e}")
 
 
