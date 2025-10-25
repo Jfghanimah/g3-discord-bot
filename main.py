@@ -79,23 +79,24 @@ async def on_message(message):
         messages_history.reverse()
         gemini_conversation = await build_gemini_conversation(messages_history)
 
-        # For chat sessions, the system instruction must be the first part of the history.
+        # The system instruction must be the first part of the history for chat sessions.
         gemini_conversation.insert(0, {'role': 'system', 'parts': [{'text': SYSTEM_INSTRUCTION}]})
-
-        # Define the tools to be used for the chat session.
-        tools = [
-            google_types.Tool(google_search=google_types.GoogleSearch()),
-            google_types.Tool(url_context=google_types.UrlContext()),
-        ]
 
         async with message.channel.typing():
             try:
                 logging.info(f'{message.author} sent LLM request.')
                 
-                chat_session = await genai_client.aio.chats.create(model=MODEL_NAME, history=gemini_conversation, tools=tools)
+                chat_session = await genai_client.aio.chats.create(model=MODEL_NAME, history=gemini_conversation)
+
+                # Define the tools to be used for this specific message.
+                tool_config = google_types.ToolConfig(
+                    google_search=google_types.GoogleSearch(),
+                    url_context=google_types.UrlContext(),
+                )
 
                 response_stream = await chat_session.send_message_stream(
-                    message=f"{message.author.display_name} (<@{message.author.id}>): {message.content}"
+                    message=f"{message.author.display_name} (<@{message.author.id}>): {message.content}",
+                    tool_config=tool_config
                 )
 
                 reply = ""
