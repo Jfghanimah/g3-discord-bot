@@ -1,13 +1,16 @@
 import os
 from dotenv import load_dotenv
 import logging
+import asyncio
 import discord
+from discord.ext import commands
 from google import genai as google_genai
 from google.genai import types as google_types
 
 # Load environment variables
 load_dotenv()
 token = os.getenv('BOT_SECRET_TOKEN')
+test_guild_id = os.getenv('TEST_GUILD_ID')
 gemini_api_key = os.getenv('GEMINI_API_KEY')
 
 # Add a check to ensure the API key is loaded.
@@ -40,9 +43,7 @@ SYSTEM_INSTRUCTION = (
     "Emulate the natural, messy flow of real group chat convo. Dont always write full sentences. Make use of fragments and short messages when appropriate."
 )
 
-async def build_gemini_conversation(
-    message_history: list[discord.Message]
-) -> list[dict]:
+async def build_gemini_conversation(message_history: list[discord.Message]) -> list[dict]:
     """Builds a conversation history formatted for the Gemini API, merging consecutive roles."""
     gemini_conversation = []
     for historical_msg in message_history:
@@ -65,27 +66,52 @@ async def build_gemini_conversation(
             gemini_conversation.append({'role': role, 'parts': [{'text': content}]})
     return gemini_conversation
 
-# Initialize the Discord client
+# Initialize the Discord client with command support
 intents = discord.Intents.default()
 intents.message_content = True
-discord_client = discord.Client(intents=intents)  # The Discord client
+
+class G3Bot(commands.Bot):
+    async def setup_hook(self):
+        # This is called once when the bot logs in, before it connects to the gateway.
+        # It's the ideal place to load extensions and sync commands.
+        await self.load_extension('matchmaking')
+        logging.info("Loaded matchmaking cog.")
+
+        try:
+            if test_guild_id:
+                guild = discord.Object(id=int(test_guild_id))
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                logging.info(f"Synced {len(synced)} application commands to guild {test_guild_id}.")
+            else:
+                synced = await self.tree.sync()
+                logging.info(f"Synced {len(synced)} application commands globally.")
+        except Exception as e:
+            logging.error(f"Failed to sync commands: {e}")
+
+    async def on_ready(self):
+        logging.info(f'Logged in as {self.user} (ID: {self.user.id})')
+        logging.info('Connected to the following servers:')
+        for guild in self.guilds:
+            logging.info(f'- {guild.name} (id: {guild.id})')
+
+bot = G3Bot(command_prefix="!", intents=intents)
 genai_client = google_genai.Client(api_key=gemini_api_key)  # The new, central GenAI client
 
-@discord_client.event
-async def on_ready():
-    logging.info(f'We have logged in as {discord_client.user}')
 
-
-@discord_client.event
+@bot.event
 async def on_message(message: discord.Message):
     """
     Handles incoming Discord messages, processing them with the Gemini LLM if the bot is mentioned.
     """
 
-    if message.author == discord_client.user:
+    # Let commands be processed
+    await bot.process_commands(message)
+
+    if message.author == bot.user:
         return
 
-    if discord_client.user.mention in message.content:
+    if bot.user.mention in message.content:
         # Retrieve and build the conversation history
         messages_history = [msg async for msg in message.channel.history(limit=HISTORY_LIMIT)]
         messages_history.reverse()
@@ -95,7 +121,7 @@ async def on_message(message: discord.Message):
             try:
                 logging.info(f'{message.author} sent LLM request.')
 
-                # Pass the system instruction directly as a dictionary in the config.
+                # This part remains the same, just using the new genai_client
                 # The tool configuration should also be part of the main config object.
                 chat_session = genai_client.aio.chats.create(
                     model=MODEL_NAME,
@@ -137,5 +163,10 @@ async def on_message(message: discord.Message):
                 logging.exception("An error occurred while processing a message.")
                 await message.channel.send(f"Error with LLM: {e}")
 
+async def main():
+    async with bot:
+        # The setup_hook will handle loading extensions and syncing commands.
+        await bot.start(token)
 
-discord_client.run(token)
+if __name__ == "__main__":
+    asyncio.run(main())
