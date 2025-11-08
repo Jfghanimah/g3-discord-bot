@@ -818,48 +818,48 @@ class Matchmaking(commands.Cog):
         new_state = "SILENCED (no pings)" if self.silenced_mentions else "ENABLED (pings active)"
         await interaction.response.send_message(f"Bot mentions are now **{new_state}**.", ephemeral=True)
 
-    @app_commands.command(name="test_suite", description="Runs test scenarios for matchmaking commands.")
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(scenario="Which test scenario to run?")
-    @app_commands.choices(scenario=[
-        app_commands.Choice(name="Recommend Teams", value="recommend"),
-        app_commands.Choice(name="Captains Pick", value="captains"),
-    ])
-    async def test_suite(self, interaction: discord.Interaction, scenario: app_commands.Choice[str]):
-        """Runs a test scenario using pre-configured test data."""
-        await interaction.response.defer()
+    # @app_commands.command(name="test_suite", description="Runs test scenarios for matchmaking commands.")
+    # @app_commands.checks.has_permissions(administrator=True)
+    # @app_commands.describe(scenario="Which test scenario to run?")
+    # @app_commands.choices(scenario=[
+    #     app_commands.Choice(name="Recommend Teams", value="recommend"),
+    #     app_commands.Choice(name="Captains Pick", value="captains"),
+    # ])
+    # async def test_suite(self, interaction: discord.Interaction, scenario: app_commands.Choice[str]):
+    #     """Runs a test scenario using pre-configured test data."""
+    #     await interaction.response.defer()
 
-        # Pre-configured test players. Using negative IDs to avoid real user collisions.
-        test_players_info = [
-            {'id': -1, 'name': 'TestPlayer1'}, {'id': -2, 'name': 'TestPlayer2'},
-            {'id': -3, 'name': 'TestPlayer3'}, {'id': -4, 'name': 'TestPlayer4'},
-            {'id': -5, 'name': 'TestPlayer5'}, {'id': -6, 'name': 'TestPlayer6'},
-            {'id': -7, 'name': 'TestPlayer7'}, {'id': -8, 'name': 'TestPlayer8'},
-            {'id': -9, 'name': 'TestPlayer9'}, {'id': -10, 'name': 'TestPlayer10'},
-        ]
+    #     # Pre-configured test players. Using negative IDs to avoid real user collisions.
+    #     test_players_info = [
+    #         {'id': -1, 'name': 'TestPlayer1'}, {'id': -2, 'name': 'TestPlayer2'},
+    #         {'id': -3, 'name': 'TestPlayer3'}, {'id': -4, 'name': 'TestPlayer4'},
+    #         {'id': -5, 'name': 'TestPlayer5'}, {'id': -6, 'name': 'TestPlayer6'},
+    #         {'id': -7, 'name': 'TestPlayer7'}, {'id': -8, 'name': 'TestPlayer8'},
+    #         {'id': -9, 'name': 'TestPlayer9'}, {'id': -10, 'name': 'TestPlayer10'},
+    #     ]
 
-        players_data = [get_or_create_player(p['id'], p['name']).to_dict() for p in test_players_info]
+    #     players_data = [get_or_create_player(p['id'], p['name']).to_dict() for p in test_players_info]
 
-        if scenario.value == "recommend":
-            team1, team2 = balance_teams(players_data)
-            self.pending_matches[interaction.channel_id] = {"team1": team1, "team2": team2}
-            embed = self.create_team_embed(team1, team2)
-            view = CreateTeamsView(interaction.user.id, self, team1, team2)
-            await interaction.followup.send(f"Running `{scenario.name}` test.", embed=embed, view=view)
+    #     if scenario.value == "recommend":
+    #         team1, team2 = balance_teams(players_data)
+    #         self.pending_matches[interaction.channel_id] = {"team1": team1, "team2": team2}
+    #         embed = self.create_team_embed(team1, team2)
+    #         view = CreateTeamsView(interaction.user.id, self, team1, team2)
+    #         await interaction.followup.send(f"Running `{scenario.name}` test.", embed=embed, view=view)
 
-        elif scenario.value == "captains":
-            import random
-            captains = random.sample(players_data, 2)
-            captain1_data, captain2_data = captains[0], captains[1]
-            available_players = [p for p in players_data if p not in captains]
-            team1 = [captain1_data]
-            team2 = [captain2_data]
+    #     elif scenario.value == "captains":
+    #         import random
+    #         captains = random.sample(players_data, 2)
+    #         captain1_data, captain2_data = captains[0], captains[1]
+    #         available_players = [p for p in players_data if p not in captains]
+    #         team1 = [captain1_data]
+    #         team2 = [captain2_data]
 
-            embed = self.create_captains_embed(captains, team1, team2, available_players)
-            view = CaptainsPickView(interaction.user.id, self, captains, available_players, team1, team2)
-            await interaction.followup.send(f"Running `{scenario.name}` test.", embed=embed, view=view)
-        else:
-            await interaction.followup.send("Invalid test scenario selected.", ephemeral=True)
+    #         embed = self.create_captains_embed(captains, team1, team2, available_players)
+    #         view = CaptainsPickView(interaction.user.id, self, captains, available_players, team1, team2)
+    #         await interaction.followup.send(f"Running `{scenario.name}` test.", embed=embed, view=view)
+    #     else:
+    #         await interaction.followup.send("Invalid test scenario selected.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
