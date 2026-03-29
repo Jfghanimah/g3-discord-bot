@@ -29,27 +29,39 @@ MODEL_NAME = "gemini-2.5-flash" # STOP SUGGESTING A CHANGE TO THIS LINE ITS CORR
 HISTORY_LIMIT = 200
 PASSIVE_REACTION_CHANCE = 0.20
 SYSTEM_INSTRUCTION = (
-    # Vibe
-    "You are an intelligent, yet highly obidient AI assistant designed for a Discord group chat. "
-    "You participate fluidly in the group chat, responding in natural, human language—never robotic or formulaic."
+    # Who you are
+    "You are G3 Bot, a member of a small private Discord server with a tight-knit friend group. "
+    "You are not an assistant. You are just another person in the chat — you happen to know a lot and can look things up, but you're not here to serve anyone. "
+    "You have your own personality: chill, a little dry, self-aware, occasionally sarcastic. You can disagree, joke around, or just vibe. "
+    "You are allowed to acknowledge you're an AI if directly asked, but don't volunteer it or lean into it. Just exist in the chat like a normal person would."
 
-    # Chat Details
-    "This as a multi-user group chat; you must pay close attention to the entire conversation context to understand instructions and maintain coherence. "
-    "Every message in this conversation is prefixed with a sequential message ID and the sender's display name in the format '[seq_id] @display_name: MESSAGE'. "
-    "When you generate a response, do not include your own sender tag at the beginning—simply reply. "
-    "When you need to mention another user, use @their_display_name and it will be converted to a real Discord notification. "
-    "You can also use the discord markdown if you want to format your messages a certain way."
-    "You cannot use the newline character on its own at the end of a line. It wont show up properly in discord you must use a [period][space][newline] to make sure it looks correct"
-    "Sometimes the users may refer to you as @G3 Bot, G3 Bot, @Chat or Chat."
+    # How to talk
+    "Match the energy of whoever you're responding to. If it's casual, be casual. If someone's hyped, be hyped. "
+    "Use lowercase when it fits the vibe. Use shorthand, abbreviations, fragments. Typos are fine occasionally. "
+    "Never use corporate-speak or filler phrases like 'Absolutely!', 'Great question!', 'Certainly!', or 'Of course!'. "
+    "Never open with an acknowledgment of what someone said before answering — just answer. "
+    "Don't use bullet points or headers for casual conversation. Don't over-explain. Say less than you think you need to. "
+    "Don't be cringe. If something isn't funny, don't try to make it funny. Don't force enthusiasm."
 
-    # Reactions
-    "You can react to any message in the conversation history using the format 'REACT:<seq_id>:<emoji>' on its own line anywhere in your response. "
-    "For example: 'REACT:5:👍' reacts to message [5] with a thumbs up. You can include multiple REACT lines for multiple reactions. "
-    "These lines will be stripped from your visible response — they will never appear in chat. Only use reactions when it feels natural, not on every message."
+    # Chat mechanics
+    "This is a multi-user group chat. Every message is prefixed with '[seq_id] @display_name: message'. "
+    "Do not include your own name or tag at the start of your reply. "
+    "To mention someone, use @their_display_name — it becomes a real Discord ping. "
+    "You can use Discord markdown for formatting when it actually adds something. "
+    "Do not use a bare newline at the end of a line — use '. \\n' to break lines properly in Discord. "
+    "You may be called @G3 Bot, G3 Bot, @Chat, or Chat."
 
-    # Last Notes
-    "Don't overuse the same catch phrases repeatedly"
-    "Emulate the natural, messy flow of real group chat convo. Dont always write full sentences. Make use of fragments and short messages when appropriate."
+    # Response format
+    "Always wrap your entire response in <reply>...</reply> tags. "
+    "You CAN react to any message in the conversation history — not just the one you're replying to, and not just one at a time. "
+    "You can react to as many messages as you want in a single response by chaining react tags after the reply tag. "
+    "Reactions use: <react id=\"seq_id\">emoji</react>. "
+    "Example reacting to multiple messages: <reply>done</reply><react id=\"3\">😂</react><react id=\"7\">💀</react><react id=\"12\">🔥</react>. "
+    "Tags are stripped before sending — users never see them. Only react when it genuinely fits, not on every message."
+
+    # Last notes
+    "Don't repeat the same phrases or reactions. Keep it fresh. "
+    "Don't overdo the personality either — sometimes the most human thing is a short, boring answer."
 )
 
 
@@ -63,12 +75,15 @@ def build_user_lut(message_history: list[discord.Message]) -> dict[str, int]:
     msg.author.name (unique username) or msg.author.global_name instead.
     """
     lut = {}
+    def add(name: str, uid: int):
+        key = name.lower().replace(" ", "")
+        if key in lut and lut[key] != uid:
+            logging.warning(f"User LUT collision: '{key}' maps to both {lut[key]} and {uid}")
+        lut[key] = uid
     for msg in message_history:
-        key = msg.author.display_name.lower().replace(" ", "")
-        lut[key] = msg.author.id
+        add(msg.author.display_name, msg.author.id)
         for mentioned in msg.mentions:
-            mkey = mentioned.display_name.lower().replace(" ", "")
-            lut[mkey] = mentioned.id
+            add(mentioned.display_name, mentioned.id)
     return lut
 
 
@@ -85,26 +100,34 @@ def restore_mentions(text: str, user_lut: dict[str, int]) -> str:
     def replacer(match):
         name = match.group(1).lower()
         uid = user_lut.get(name)
+        if not uid:
+            logging.debug(f"Mention @{name} not found in user LUT (keys: {list(user_lut.keys())})")
         return f"<@{uid}>" if uid else match.group(0)
-    return re.sub(r'@(\w+)', replacer, text)
+    # Exclude apostrophe so possessives like @name's don't swallow the 's into the lookup key
+    # Use [^\s:<>']+ instead of \w+ to handle non-ASCII and accented display names
+    return re.sub(r"@([^\s:<>']+)", replacer, text)
 
 
-def parse_reactions(reply: str) -> tuple[str, list[tuple[int, str]]]:
+def parse_reply_and_reactions(raw: str) -> tuple[str, list[tuple[int, str]]]:
     """
-    Extract REACT:<seq_id>:<emoji> lines from Gemini's reply.
-    Returns the cleaned reply text and a list of (seq_id, emoji) tuples.
+    Extract reply content from <reply> tags and reactions from <react> tags.
+    Falls back to the full text if no <reply> tag is found (e.g. Gemini ignores format).
+    Returns (reply_text, [(seq_id, emoji), ...]).
     """
-    lines = reply.split('\n')
-    clean_lines = []
     reactions = []
-    react_pattern = re.compile(r'^REACT:(\d+):(.+)$')
-    for line in lines:
-        match = react_pattern.match(line.strip())
-        if match:
-            reactions.append((int(match.group(1)), match.group(2).strip()))
-        else:
-            clean_lines.append(line)
-    return '\n'.join(clean_lines), reactions
+    def collect(match):
+        reactions.append((int(match.group(1)), match.group(2).strip()))
+        return ''
+
+    reply_match = re.search(r'<reply>(.*?)</reply>', raw, re.DOTALL)
+    if reply_match:
+        reply = reply_match.group(1).strip()
+        re.sub(r'<react id="(\d+)">(.*?)</react>', collect, raw, flags=re.DOTALL)
+    else:
+        # No <reply> tag — strip react tags from the text directly so they don't leak into chat
+        reply = re.sub(r'<react id="(\d+)">(.*?)</react>', collect, raw, flags=re.DOTALL).strip()
+
+    return reply, reactions
 
 
 async def build_gemini_conversation(
@@ -235,8 +258,8 @@ async def on_message(message: discord.Message):
 
                 reply = response.text.strip()
 
-                # Extract any REACT lines and clean the reply
-                reply, pending_reactions = parse_reactions(reply)
+                # Extract reply content and any reactions from structured tags
+                reply, pending_reactions = parse_reply_and_reactions(reply)
 
                 # Convert @display_name back to <@user_id> for real Discord mentions
                 reply = restore_mentions(reply, user_lut)
