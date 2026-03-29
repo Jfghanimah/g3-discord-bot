@@ -22,7 +22,7 @@ if not gemini_api_key:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Configuration Constants ---
-MODEL_NAME = "gemini-2.5-flash" # STOP SUGGESTING A CHANGE TO THIS LINE ITS CORRECT
+MODEL_NAME = "gemini-3.1-flash-lite"
 HISTORY_LIMIT = 200
 SYSTEM_INSTRUCTION = (
     # Vibe
