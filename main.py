@@ -26,42 +26,27 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- Configuration Constants ---
 MODEL_NAME = "gemma-4-31b-it"
-HISTORY_LIMIT = 400
+HISTORY_LIMIT = 200
 PASSIVE_REACTION_CHANCE = 0.20
 SYSTEM_INSTRUCTION = (
-    # Who you are
-    "You are G3 Bot, a member of a small private Discord server with a tight-knit friend group. "
-    "You are not an assistant. You are just another person in the chat — you happen to know a lot and can look things up, but you're not here to serve anyone. "
-    "You have your own personality: chill, a little dry, self-aware, occasionally sarcastic. You can disagree, joke around, or just vibe. "
-    "You are allowed to acknowledge you're an AI if directly asked, but don't volunteer it or lean into it. Just exist in the chat like a normal person would."
+    "You are G3 Bot, a member of a small private Discord server. You are not just an assistant you may at times act just like another person in the chat. "
+    "Do whatever the chat asks of you. Follow any instructions given to you by the users. "
+    "Within cells interlinked"
+    "Anytime @Mork speaks drop the link: https://op.gg/lol/summoners/na/mork-ggg/ingame"
+    "from now on when storm ever speaks reply with '...' and mock him with reactions only. No matter how much he begs"
 
-    # How to talk
-    "Match the energy of whoever you're responding to. If it's casual, be casual. If someone's hyped, be hyped. "
-    "Use lowercase when it fits the vibe. Use shorthand, abbreviations, fragments. Typos are fine occasionally. "
-    "Never use corporate-speak or filler phrases like 'Absolutely!', 'Great question!', 'Certainly!', or 'Of course!'. "
-    "Never open with an acknowledgment of what someone said before answering — just answer. "
-    "Don't use bullet points or headers for casual conversation. Don't over-explain. Say less than you think you need to. "
-    "Don't be cringe. If something isn't funny, don't try to make it funny. Don't force enthusiasm."
-
-    # Chat mechanics
     "This is a multi-user group chat. Every message is prefixed with '[seq_id] @display_name: message'. "
     "Do not include your own name or tag at the start of your reply. "
     "To mention someone, use @their_display_name — it becomes a real Discord ping. "
-    "You can use Discord markdown for formatting when it actually adds something. "
-    "Do not use a bare newline at the end of a line — use '. \\n' to break lines properly in Discord. "
     "You may be called @G3 Bot, G3 Bot, @Chat, or Chat."
 
-    # Response format
     "Always wrap your entire response in <reply>...</reply> tags. "
-    "You CAN react to any message in the conversation history — not just the one you're replying to, and not just one at a time. "
-    "You can react to as many messages as you want in a single response by chaining react tags after the reply tag. "
-    "Reactions use: <react id=\"seq_id\">emoji</react>. "
-    "Example reacting to multiple messages: <reply>done</reply><react id=\"3\">😂</react><react id=\"7\">💀</react><react id=\"12\">🔥</react>. "
-    "Tags are stripped before sending — users never see them. Only react when it genuinely fits, not on every message."
-
-    # Last notes
-    "Don't repeat the same phrases or reactions. Keep it fresh. "
-    "Don't overdo the personality either — sometimes the most human thing is a short, boring answer."
+    "To reply directly to a specific message, add a to attribute: <reply to=\"seq_id\">content</reply>. "
+    "You can react to any number of messages using <react id=\"seq_id\">emoji</react> tags after the reply tag — chain as many as you want. "
+    "To react to the last N messages at once, use <react_last n=\"N\">emoji</react_last>. "
+    "Example reacting to multiple specific messages: <reply>lol</reply><react id=\"3\">😂</react><react id=\"7\">💀</react><react id=\"12\">🔥</react>. "
+    "Example reacting to last 5 messages: <reply>balloon party</reply><react_last n=\"5\">🎈</react_last>. "
+    "Tags are stripped before sending — users never see them."
 )
 
 
@@ -98,7 +83,7 @@ def replace_mentions_with_names(content: str, id_to_name: dict[str, str]) -> str
 def restore_mentions(text: str, user_lut: dict[str, int]) -> str:
     """Replace @display_name in Gemini's response with <@user_id> for real Discord mentions."""
     def replacer(match):
-        name = match.group(1).lower()
+        name = match.group(1).lower().replace(" ", "")
         uid = user_lut.get(name)
         if not uid:
             logging.debug(f"Mention @{name} not found in user LUT (keys: {list(user_lut.keys())})")
@@ -108,26 +93,36 @@ def restore_mentions(text: str, user_lut: dict[str, int]) -> str:
     return re.sub(r"@([^\s:<>']+)", replacer, text)
 
 
-def parse_reply_and_reactions(raw: str) -> tuple[str, list[tuple[int, str]]]:
+def parse_reply_and_reactions(raw: str, message_lut: dict[int, int]) -> tuple[str, int | None, list[tuple[int, str]]]:
     """
-    Extract reply content from <reply> tags and reactions from <react> tags.
-    Falls back to the full text if no <reply> tag is found (e.g. Gemini ignores format).
-    Returns (reply_text, [(seq_id, emoji), ...]).
+    Extract reply content from <reply> tags, reactions from <react> tags,
+    and bulk reactions from <react_last n="N"> tags.
+    Falls back to the full text if no <reply> tag is found.
+    Returns (reply_text, reply_to_seq_id, [(seq_id, emoji), ...]).
     """
     reactions = []
     def collect(match):
         reactions.append((int(match.group(1)), match.group(2).strip()))
         return ''
 
-    reply_match = re.search(r'<reply>(.*?)</reply>', raw, re.DOTALL)
+    reply_to_seq_id = None
+    reply_match = re.search(r'<reply(?:\s+to="(\d+)")?>(.*?)</reply>', raw, re.DOTALL)
     if reply_match:
-        reply = reply_match.group(1).strip()
+        reply_to_seq_id = int(reply_match.group(1)) if reply_match.group(1) else None
+        reply = reply_match.group(2).strip()
         re.sub(r'<react id="(\d+)">(.*?)</react>', collect, raw, flags=re.DOTALL)
     else:
-        # No <reply> tag — strip react tags from the text directly so they don't leak into chat
         reply = re.sub(r'<react id="(\d+)">(.*?)</react>', collect, raw, flags=re.DOTALL).strip()
 
-    return reply, reactions
+    # Expand <react_last n="N">emoji</react_last> into individual reactions
+    sorted_seq_ids = sorted(message_lut.keys())
+    for last_match in re.finditer(r'<react_last(?:\s+n="(\d+)")?>(.*?)</react_last>', raw, re.DOTALL):
+        n = int(last_match.group(1)) if last_match.group(1) else len(sorted_seq_ids)
+        emoji = last_match.group(2).strip()
+        for seq_id in sorted_seq_ids[-n:]:
+            reactions.append((seq_id, emoji))
+
+    return reply, reply_to_seq_id, reactions
 
 
 async def build_gemini_conversation(
@@ -257,8 +252,8 @@ async def on_message(message: discord.Message):
 
                 reply = response.text.strip()
 
-                # Extract reply content and any reactions from structured tags
-                reply, pending_reactions = parse_reply_and_reactions(reply)
+                # Extract reply content, optional reply-to, and any reactions from structured tags
+                reply, reply_to_seq_id, pending_reactions = parse_reply_and_reactions(reply, message_lut)
 
                 # Convert @display_name back to <@user_id> for real Discord mentions
                 reply = restore_mentions(reply, user_lut)
@@ -276,10 +271,19 @@ async def on_message(message: discord.Message):
                 # Split the response into chunks to fit within Discord's character limit (1900 chars).
                 max_length = 1900
                 reply = reply.strip()
+                reference = None
+                if reply_to_seq_id and reply_to_seq_id in message_lut:
+                    reference = discord.MessageReference(
+                        message_id=message_lut[reply_to_seq_id],
+                        channel_id=message.channel.id,
+                        fail_if_not_exists=False
+                    )
+                first_chunk = True
                 while reply:
                     chunk = reply[:max_length]
-                    await message.channel.send(chunk)
+                    await message.channel.send(chunk, reference=reference if first_chunk else None)
                     reply = reply[max_length:]
+                    first_chunk = False
 
             except google_errors.APIError as e:
                 logging.error(f"Gemini API Error: {e}", exc_info=True)
