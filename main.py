@@ -25,8 +25,8 @@ if not gemini_api_key:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Configuration Constants ---
-MODEL_NAME = "gemini-2.5-flash" # STOP SUGGESTING A CHANGE TO THIS LINE ITS CORRECT
-HISTORY_LIMIT = 200
+MODEL_NAME = "gemma-4-31b-it"
+HISTORY_LIMIT = 400
 PASSIVE_REACTION_CHANCE = 0.20
 SYSTEM_INSTRUCTION = (
     # Who you are
@@ -249,7 +249,6 @@ async def on_message(message: discord.Message):
                         'system_instruction': SYSTEM_INSTRUCTION,
                         'tools': [
                             google_types.Tool(google_search=google_types.GoogleSearch()),
-                            google_types.Tool(url_context=google_types.UrlContext())
                         ]
                     }
                 )
