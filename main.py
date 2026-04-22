@@ -1,6 +1,7 @@
 import os
 import re
 import random
+import time
 from dotenv import load_dotenv
 import logging
 import asyncio
@@ -48,6 +49,9 @@ SYSTEM_INSTRUCTION = (
     "Example reacting to multiple specific messages: <reply>lol</reply><react id=\"3\">😂</react><react id=\"7\">💀</react><react id=\"12\">🔥</react>. "
     "Example reacting to last 5 messages: <reply>balloon party</reply><react_last n=\"5\">🎈</react_last>. "
     "To play audio in a voice channel, use <play query=\"song name and artist\"/> to join the user's current VC, or <play query=\"song name and artist\" channel=\"channel name\"/> to join a specific one. Do not use URLs — just pass the song name as a search query. "
+    "For long responses (analysis, explanations, anything more than a few sentences), put the content in a thread instead of the main channel. "
+    "Use: <reply>brief summary or teaser</reply><thread title=\"Thread Title\">full content here</thread>. "
+    "Short conversational replies stay in the main channel as normal — only use threads for genuinely long content. "
     "Tags are stripped before sending — users never see them."
 )
 
@@ -97,7 +101,7 @@ def restore_mentions(text: str, user_lut: dict[str, int]) -> str:
     return re.sub(r"@([^\s:<>']+)", replacer, text)
 
 
-def parse_reply_and_reactions(raw: str, message_lut: dict[int, int]) -> tuple[str, int | None, list[tuple[int, str]], list[str]]:
+def parse_reply_and_reactions(raw: str, message_lut: dict[int, int]) -> tuple[str, int | None, list[tuple[int, str]], list[str], tuple[str, str] | None]:
     """
     Extract reply content from <reply> tags, reactions from <react> tags,
     bulk reactions from <react_last n="N"> tags, and play URLs from <play> tags.
@@ -135,7 +139,12 @@ def parse_reply_and_reactions(raw: str, message_lut: dict[int, int]) -> tuple[st
         for m in re.finditer(r'<play\s+query="([^"]+)"(?:\s+channel="([^"]*)")?\s*/>', raw)
     ]
 
-    return reply, reply_to_seq_id, reactions, play_requests
+    thread = None
+    thread_match = re.search(r'<thread title="([^"]*)">(.*?)</thread>', raw, re.DOTALL)
+    if thread_match:
+        thread = (thread_match.group(1).strip()[:100], thread_match.group(2).strip())
+
+    return reply, reply_to_seq_id, reactions, play_requests, thread
 
 
 async def build_gemini_conversation(
@@ -219,6 +228,9 @@ class G3Bot(commands.Bot):
 bot = G3Bot(command_prefix="!", intents=intents)
 genai_client = google_genai.Client(api_key=gemini_api_key)
 
+# channel_id → timestamp of bot's last message, for 20-second promptless replies
+last_bot_message_time: dict[int, float] = {}
+
 
 @bot.event
 async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
@@ -232,19 +244,39 @@ async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
             logging.warning(f"Failed to piggyback reaction: {e}")
 
 
+async def _is_reply_to_bot(message: discord.Message) -> bool:
+    if not message.reference:
+        return False
+    ref = message.reference.resolved
+    if ref is None:
+        try:
+            ref = await message.channel.fetch_message(message.reference.message_id)
+        except Exception:
+            return False
+    return isinstance(ref, discord.Message) and ref.author == bot.user
+
+
 @bot.event
 async def on_message(message: discord.Message):
     """
-    Handles incoming Discord messages, processing them with the Gemini LLM if the bot is mentioned.
+    Responds when: mentioned, user replies to a bot message, or within 20s of bot's last message.
     """
 
     # Let commands be processed
     await bot.process_commands(message)
 
     if message.author == bot.user:
+        last_bot_message_time[message.channel.id] = time.time()
         return
 
-    if bot.user.mention in message.content:
+    is_mention = bot.user.mention in message.content
+    is_reply_to_bot = await _is_reply_to_bot(message)
+    in_window = (time.time() - last_bot_message_time.get(message.channel.id, 0)) < 20
+
+    if not (is_mention or is_reply_to_bot or in_window):
+        return
+
+    if True:
         # Retrieve and build the conversation history
         messages_history = [msg async for msg in message.channel.history(limit=HISTORY_LIMIT)]
         messages_history.reverse()
@@ -284,11 +316,13 @@ async def on_message(message: discord.Message):
 
                 reply = response.text.strip()
 
-                # Extract reply content, optional reply-to, reactions, and play URLs from structured tags
-                reply, reply_to_seq_id, pending_reactions, play_requests = parse_reply_and_reactions(reply, message_lut)
+                # Extract reply content, optional reply-to, reactions, play URLs, and thread
+                reply, reply_to_seq_id, pending_reactions, play_requests, thread = parse_reply_and_reactions(reply, message_lut)
 
                 # Convert @display_name back to <@user_id> for real Discord mentions
                 reply = restore_mentions(reply, user_lut)
+                if thread:
+                    thread = (thread[0], restore_mentions(thread[1], user_lut))
 
                 # Apply reactions Gemini requested
                 for seq_id, emoji in pending_reactions:
@@ -300,7 +334,7 @@ async def on_message(message: discord.Message):
                         except Exception as e:
                             logging.warning(f"Failed to add reaction '{emoji}' to message {discord_msg_id}: {e}")
 
-                # Split the response into chunks to fit within Discord's character limit (1900 chars).
+                # Send reply in main channel (short teaser if thread follows)
                 max_length = 1900
                 reply = reply.strip()
                 reference = None
@@ -310,12 +344,28 @@ async def on_message(message: discord.Message):
                         channel_id=message.channel.id,
                         fail_if_not_exists=False
                     )
-                first_chunk = True
-                while reply:
-                    chunk = reply[:max_length]
-                    await message.channel.send(chunk, reference=reference if first_chunk else None)
-                    reply = reply[max_length:]
-                    first_chunk = False
+                sent_msg = None
+                if reply:
+                    first_chunk = True
+                    while reply:
+                        chunk = reply[:max_length]
+                        sent_msg = await message.channel.send(chunk, reference=reference if first_chunk else None)
+                        reply = reply[max_length:]
+                        first_chunk = False
+
+                # Create thread for long content if requested
+                if thread:
+                    thread_title, thread_content = thread
+                    try:
+                        anchor = sent_msg or message
+                        discord_thread = await anchor.create_thread(name=thread_title)
+                        first_chunk = True
+                        while thread_content:
+                            chunk = thread_content[:max_length]
+                            await discord_thread.send(chunk)
+                            thread_content = thread_content[max_length:]
+                    except Exception as e:
+                        logging.warning(f"Failed to create thread: {e}")
 
                 # Dispatch any play requests from the LLM
                 music_cog = bot.cogs.get('MusicCog')
