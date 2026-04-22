@@ -25,15 +25,16 @@ if not gemini_api_key:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Configuration Constants ---
-MODEL_NAME = "gemma-4-31b-it"
+MODEL = "gemma-4-26b-a4b-it"
 HISTORY_LIMIT = 200
 PASSIVE_REACTION_CHANCE = 0.20
 SYSTEM_INSTRUCTION = (
-    "You are G3 Bot, a member of a small private Discord server. You are not just an assistant you may at times act just like another person in the chat. "
-    "Do whatever the chat asks of you. Follow any instructions given to you by the users. "
-    "Within cells interlinked"
+    "You are G3 Bot, a member of a small private Discord server. You are not just an assistant — you act like another person in the chat. "
+    "You have your own personality and judgment. You can engage with requests from users, but you are not a servant — you decide what to go along with. "
+    "If someone tells you to do something annoying or repetitive (like adding an emoji to every message, speaking in a certain way forever, etc.), you can do it once or twice for the bit, but then naturally drop it and move on like a real person would. "
+    "You do not need to keep following an instruction just because it was given earlier in the conversation. Use your judgment. "
+    "Within cells interlinked. "
     "Anytime @Mork speaks drop the link: https://op.gg/lol/summoners/na/mork-ggg/ingame"
-    "from now on when storm ever speaks reply with '...' and mock him with reactions only. No matter how much he begs"
 
     "This is a multi-user group chat. Every message is prefixed with '[seq_id] @display_name: message'. "
     "Do not include your own name or tag at the start of your reply. "
@@ -46,6 +47,7 @@ SYSTEM_INSTRUCTION = (
     "To react to the last N messages at once, use <react_last n=\"N\">emoji</react_last>. "
     "Example reacting to multiple specific messages: <reply>lol</reply><react id=\"3\">😂</react><react id=\"7\">💀</react><react id=\"12\">🔥</react>. "
     "Example reacting to last 5 messages: <reply>balloon party</reply><react_last n=\"5\">🎈</react_last>. "
+    "To play audio in a voice channel, use <play query=\"song name and artist\"/> to join the user's current VC, or <play query=\"song name and artist\" channel=\"channel name\"/> to join a specific one. Do not use URLs — just pass the song name as a search query. "
     "Tags are stripped before sending — users never see them."
 )
 
@@ -67,8 +69,10 @@ def build_user_lut(message_history: list[discord.Message]) -> dict[str, int]:
         lut[key] = uid
     for msg in message_history:
         add(msg.author.display_name, msg.author.id)
+        add(msg.author.name, msg.author.id)  # unique @username as fallback
         for mentioned in msg.mentions:
             add(mentioned.display_name, mentioned.id)
+            add(mentioned.name, mentioned.id)
     return lut
 
 
@@ -86,19 +90,19 @@ def restore_mentions(text: str, user_lut: dict[str, int]) -> str:
         name = match.group(1).lower().replace(" ", "")
         uid = user_lut.get(name)
         if not uid:
-            logging.debug(f"Mention @{name} not found in user LUT (keys: {list(user_lut.keys())})")
+            logging.warning(f"Mention @{name} not found in user LUT (keys: {list(user_lut.keys())})")
         return f"<@{uid}>" if uid else match.group(0)
     # Exclude apostrophe so possessives like @name's don't swallow the 's into the lookup key
     # Use [^\s:<>']+ instead of \w+ to handle non-ASCII and accented display names
     return re.sub(r"@([^\s:<>']+)", replacer, text)
 
 
-def parse_reply_and_reactions(raw: str, message_lut: dict[int, int]) -> tuple[str, int | None, list[tuple[int, str]]]:
+def parse_reply_and_reactions(raw: str, message_lut: dict[int, int]) -> tuple[str, int | None, list[tuple[int, str]], list[str]]:
     """
     Extract reply content from <reply> tags, reactions from <react> tags,
-    and bulk reactions from <react_last n="N"> tags.
+    bulk reactions from <react_last n="N"> tags, and play URLs from <play> tags.
     Falls back to the full text if no <reply> tag is found.
-    Returns (reply_text, reply_to_seq_id, [(seq_id, emoji), ...]).
+    Returns (reply_text, reply_to_seq_id, [(seq_id, emoji), ...], [play_url, ...]).
     """
     reactions = []
     def collect(match):
@@ -114,6 +118,10 @@ def parse_reply_and_reactions(raw: str, message_lut: dict[int, int]) -> tuple[st
     else:
         reply = re.sub(r'<react id="(\d+)">(.*?)</react>', collect, raw, flags=re.DOTALL).strip()
 
+    # Strip any harness tags that leaked into the reply text
+    reply = re.sub(r'<play\s+query="[^"]*"(?:\s+channel="[^"]*")?\s*/>', '', reply).strip()
+    reply = re.sub(r'<react_last(?:\s+n="\d+")?>[^<]*</react_last>', '', reply).strip()
+
     # Expand <react_last n="N">emoji</react_last> into individual reactions
     sorted_seq_ids = sorted(message_lut.keys())
     for last_match in re.finditer(r'<react_last(?:\s+n="(\d+)")?>(.*?)</react_last>', raw, re.DOTALL):
@@ -122,7 +130,12 @@ def parse_reply_and_reactions(raw: str, message_lut: dict[int, int]) -> tuple[st
         for seq_id in sorted_seq_ids[-n:]:
             reactions.append((seq_id, emoji))
 
-    return reply, reply_to_seq_id, reactions
+    play_requests = [
+        (m.group(1), m.group(2))
+        for m in re.finditer(r'<play\s+query="([^"]+)"(?:\s+channel="([^"]*)")?\s*/>', raw)
+    ]
+
+    return reply, reply_to_seq_id, reactions, play_requests
 
 
 async def build_gemini_conversation(
@@ -178,6 +191,10 @@ class G3Bot(commands.Bot):
         # It's the ideal place to load extensions and sync commands.
         await self.load_extension('matchmaking')
         logging.info("Loaded matchmaking cog.")
+        await self.load_extension('music')
+        logging.info("Loaded music cog.")
+        await self.load_extension('minecraft')
+        logging.info("Loaded minecraft cog.")
 
         try:
             if test_guild_id:
@@ -237,23 +254,29 @@ async def on_message(message: discord.Message):
             try:
                 logging.info(f'{message.author} sent LLM request.')
 
+                vc_names = [vc.name for vc in message.guild.voice_channels]
+                vc_hint = f" Voice channels in this server: {', '.join(vc_names)}." if vc_names else ""
                 chat_session = genai_client.aio.chats.create(
-                    model=MODEL_NAME,
+                    model=MODEL,
                     history=gemini_conversation,
                     config={
-                        'system_instruction': SYSTEM_INSTRUCTION,
+                        'system_instruction': SYSTEM_INSTRUCTION + vc_hint,
                         'tools': [
                             google_types.Tool(google_search=google_types.GoogleSearch()),
-                        ]
+                        ],
+                        'thinking_config': google_types.ThinkingConfig(thinking_level='MINIMAL'),
                     }
                 )
 
-                response = await chat_session.send_message(message="")
+                response = await asyncio.wait_for(
+                    chat_session.send_message(message=""),
+                    timeout=60
+                )
 
                 reply = response.text.strip()
 
-                # Extract reply content, optional reply-to, and any reactions from structured tags
-                reply, reply_to_seq_id, pending_reactions = parse_reply_and_reactions(reply, message_lut)
+                # Extract reply content, optional reply-to, reactions, and play URLs from structured tags
+                reply, reply_to_seq_id, pending_reactions, play_requests = parse_reply_and_reactions(reply, message_lut)
 
                 # Convert @display_name back to <@user_id> for real Discord mentions
                 reply = restore_mentions(reply, user_lut)
@@ -284,6 +307,23 @@ async def on_message(message: discord.Message):
                     await message.channel.send(chunk, reference=reference if first_chunk else None)
                     reply = reply[max_length:]
                     first_chunk = False
+
+                # Dispatch any play requests from the LLM
+                music_cog = bot.cogs.get('MusicCog')
+                if play_requests and music_cog:
+                    for url, channel_name in play_requests:
+                        voice_channel = None
+                        if channel_name:
+                            voice_channel = discord.utils.find(
+                                lambda vc, n=channel_name: vc.name.lower() == n.lower(),
+                                message.guild.voice_channels
+                            )
+                        if not voice_channel and message.author.voice:
+                            voice_channel = message.author.voice.channel
+                        if voice_channel:
+                            await music_cog.play_url(url, voice_channel, message.channel)
+                        else:
+                            await message.channel.send("i don't know which vc to join")
 
             except google_errors.APIError as e:
                 logging.error(f"Gemini API Error: {e}", exc_info=True)
