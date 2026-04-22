@@ -228,8 +228,8 @@ class G3Bot(commands.Bot):
 bot = G3Bot(command_prefix="!", intents=intents)
 genai_client = google_genai.Client(api_key=gemini_api_key)
 
-# channel_id → timestamp of bot's last message, for 20-second promptless replies
-last_bot_message_time: dict[int, float] = {}
+# channel_id → (timestamp, user_id) of the last explicit @mention, for 20s window replies
+last_mention: dict[int, tuple[float, int]] = {}
 
 
 @bot.event
@@ -266,15 +266,24 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
     if message.author == bot.user:
-        last_bot_message_time[message.channel.id] = time.time()
         return
 
     is_mention = bot.user.mention in message.content
     is_reply_to_bot = await _is_reply_to_bot(message)
-    in_window = (time.time() - last_bot_message_time.get(message.channel.id, 0)) < 20
+
+    # 20s window only applies to the user who originally @mentioned the bot
+    channel_last = last_mention.get(message.channel.id)
+    in_window = (
+        channel_last is not None
+        and message.author.id == channel_last[1]
+        and (time.time() - channel_last[0]) < 20
+    )
 
     if not (is_mention or is_reply_to_bot or in_window):
         return
+
+    if is_mention:
+        last_mention[message.channel.id] = (time.time(), message.author.id)
 
     if True:
         # Retrieve and build the conversation history
@@ -353,12 +362,11 @@ async def on_message(message: discord.Message):
                         reply = reply[max_length:]
                         first_chunk = False
 
-                # Create thread for long content if requested
+                # Create thread for long content if requested, anchored to the user's message
                 if thread:
                     thread_title, thread_content = thread
                     try:
-                        anchor = sent_msg or message
-                        discord_thread = await anchor.create_thread(name=thread_title)
+                        discord_thread = await message.create_thread(name=thread_title)
                         first_chunk = True
                         while thread_content:
                             chunk = thread_content[:max_length]
