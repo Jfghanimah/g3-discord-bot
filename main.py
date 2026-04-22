@@ -38,8 +38,8 @@ SYSTEM_INSTRUCTION = (
 
     "This is a multi-user group chat. Every message is prefixed with '[seq_id] @display_name: message'. "
     "Do not include your own name or tag at the start of your reply. "
-    "To mention someone, use @their_display_name — it becomes a real Discord ping. "
-    "You may be called @G3 Bot, G3 Bot, @Chat, or Chat."
+    "To mention someone, use @their_display_name exactly as it appears in the conversation — lowercase with no spaces (e.g. @g3bot, @drdoughnutdude). This is critical: spaces break mentions. "
+    "You may be called @G3 Bot, G3 Bot, @Chat, or Chat. Your own mention handle is @g3bot."
 
     "Always wrap your entire response in <reply>...</reply> tags. "
     "To reply directly to a specific message, add a to attribute: <reply to=\"seq_id\">content</reply>. "
@@ -251,8 +251,12 @@ async def on_message(message: discord.Message):
 
         user_lut = build_user_lut(messages_history)
         # Bot's own user is never an author in the LUT (bot messages are role "model"), add explicitly
-        user_lut[bot.user.display_name.lower().replace(" ", "")] = bot.user.id
+        # Index by full normalized name and also each individual word so partial matches work
+        bot_display = bot.user.display_name.lower().replace(" ", "")
+        user_lut[bot_display] = bot.user.id
         user_lut[bot.user.name.lower().replace(" ", "")] = bot.user.id
+        for word in bot.user.display_name.lower().split():
+            user_lut.setdefault(word, bot.user.id)
         gemini_conversation, message_lut = await build_gemini_conversation(messages_history, user_lut)
 
         async with message.channel.typing():
