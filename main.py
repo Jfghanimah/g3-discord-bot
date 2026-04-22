@@ -226,13 +226,15 @@ class G3Bot(commands.Bot):
         for guild in self.guilds:
             logging.info(f'- {guild.name} (id: {guild.id})')
 
-    async def on_reaction_add(self, reaction: discord.Reaction, user: discord.User):
-        if user == self.user:
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        if payload.user_id == self.user.id:
             return
-        logging.info(f'Reaction {reaction.emoji} from {user} — rolling for piggyback')
+        logging.info(f'Reaction {payload.emoji} from user {payload.user_id} — rolling for piggyback')
         if random.random() < PASSIVE_REACTION_CHANCE:
             try:
-                await reaction.message.add_reaction(reaction.emoji)
+                channel = self.get_channel(payload.channel_id)
+                if channel:
+                    await channel.get_partial_message(payload.message_id).add_reaction(payload.emoji)
             except discord.DiscordException as e:
                 logging.warning(f"Failed to piggyback reaction: {e}")
 
