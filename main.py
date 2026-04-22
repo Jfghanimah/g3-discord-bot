@@ -226,23 +226,21 @@ class G3Bot(commands.Bot):
         for guild in self.guilds:
             logging.info(f'- {guild.name} (id: {guild.id})')
 
+    async def on_reaction_add(self, reaction: discord.Reaction, user: discord.User):
+        if user == self.user:
+            return
+        logging.info(f'Reaction {reaction.emoji} from {user} — rolling for piggyback')
+        if random.random() < PASSIVE_REACTION_CHANCE:
+            try:
+                await reaction.message.add_reaction(reaction.emoji)
+            except discord.DiscordException as e:
+                logging.warning(f"Failed to piggyback reaction: {e}")
+
 bot = G3Bot(command_prefix="!", intents=intents)
 genai_client = google_genai.Client(api_key=gemini_api_key)
 
 # channel_id → (timestamp, user_id) of the last explicit @mention, for 20s window replies
 last_mention: dict[int, tuple[float, int]] = {}
-
-
-@bot.event
-async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
-    """Piggyback on user reactions with a 20% chance — copies the same emoji."""
-    if user == bot.user:
-        return
-    if random.random() < PASSIVE_REACTION_CHANCE:
-        try:
-            await reaction.message.add_reaction(reaction.emoji)
-        except discord.DiscordException as e:
-            logging.warning(f"Failed to piggyback reaction: {e}")
 
 
 async def _is_reply_to_bot(message: discord.Message) -> bool:
@@ -257,7 +255,6 @@ async def _is_reply_to_bot(message: discord.Message) -> bool:
     return isinstance(ref, discord.Message) and ref.author == bot.user
 
 
-@bot.event
 async def on_message(message: discord.Message):
     """
     Responds when: mentioned, user replies to a bot message, or within 20s of bot's last message.
@@ -402,6 +399,8 @@ async def on_message(message: discord.Message):
             except Exception as e:
                 logging.exception("An error occurred while processing a message.")
                 await message.channel.send(f"Error with LLM: {e}")
+
+bot.event(on_message)
 
 async def main():
     async with bot:
