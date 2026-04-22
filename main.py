@@ -169,7 +169,9 @@ async def build_gemini_conversation(
             clean_content = replace_mentions_with_names(historical_msg.content, id_to_name)
             content = f"[{seq_id}] @{display}: {clean_content}"
         else:
-            content = f"[{seq_id}] {historical_msg.content}"
+            # Strip any leaked [seq_id] prefix from previous bot replies to prevent snowballing
+            clean_content = re.sub(r'^\[\d+\]\s*', '', historical_msg.content)
+            content = f"[{seq_id}] {clean_content}"
 
         seq_id += 1
 
@@ -248,6 +250,9 @@ async def on_message(message: discord.Message):
         messages_history.reverse()
 
         user_lut = build_user_lut(messages_history)
+        # Bot's own user is never an author in the LUT (bot messages are role "model"), add explicitly
+        user_lut[bot.user.display_name.lower().replace(" ", "")] = bot.user.id
+        user_lut[bot.user.name.lower().replace(" ", "")] = bot.user.id
         gemini_conversation, message_lut = await build_gemini_conversation(messages_history, user_lut)
 
         async with message.channel.typing():
