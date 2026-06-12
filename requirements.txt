@@ -1,4 +1,5 @@
 google-genai
 python-dotenv
-discord.py
+discord.py[voice]
+yt-dlp
 pandas
