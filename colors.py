@@ -190,10 +190,16 @@ class ColorsCog(commands.Cog, name="ColorsCog"):
                     "limit. Try picking an existing color from `/colors`."
                 )
                 return
-            # Move it just under the bot's top role so the color isn't buried
-            # beneath other colored roles. Best effort — position shuffles can fail.
+            # Place the role directly beneath the bot's own role, which is the
+            # divider for the color band (staff above the bot, group roles below
+            # the colors). Use edit_role_positions, NOT role.edit(position=...):
+            # the latter computes the move from the local role cache, which is
+            # stale right after create_role (Discord shifts other roles
+            # server-side before the gateway reconciles), so it silently leaves
+            # the new role at the bottom. edit_role_positions sends the target
+            # straight to Discord and lets the server reorder authoritatively.
             try:
-                await role.edit(position=max(guild.me.top_role.position - 1, 1))
+                await guild.edit_role_positions({role: max(guild.me.top_role.position - 1, 1)})
             except discord.HTTPException as e:
                 logging.warning(f"Failed to position color role {role_name}: {e}")
 
