@@ -1,4 +1,4 @@
-from colors import normalize_hex, render_swatches, COLOR_ROLE_RE, PALETTE
+from colors import normalize_hex, render_swatches, color_role_position, staff_role_key, COLOR_ROLE_RE, PALETTE
 
 
 class TestNormalizeHex:
@@ -48,6 +48,47 @@ class TestPalette:
     def test_palette_hexes_are_valid_and_canonical(self):
         for hex_code in PALETTE:
             assert normalize_hex(hex_code) == hex_code, f"hex {hex_code} not canonical"
+
+
+class TestColorRolePosition:
+
+    def test_lands_just_below_lowest_staff_role(self):
+        # Staff at 20 (admin), 18 (mod), 15 (robots/bot). Colors go just below 15.
+        assert color_role_position([20, 18, 15], bot_ceiling=19) == 14
+
+    def test_stays_below_staff_even_when_bot_is_king(self):
+        # Bot mis-ranked at top (25); other staff at 18 and 16. Colors below 16, not below bot.
+        assert color_role_position([25, 18, 16], bot_ceiling=24) == 15
+
+    def test_never_exceeds_bot_ceiling(self):
+        # If the only staff role found sits above the bot, clamp to what the bot can reach.
+        assert color_role_position([30], bot_ceiling=10) == 10
+
+    def test_no_staff_roles_falls_back_to_ceiling(self):
+        assert color_role_position([], bot_ceiling=7) == 7
+
+    def test_never_returns_everyone_position(self):
+        # min staff at position 1 -> target 0 would collide with @everyone; clamp to 1.
+        assert color_role_position([1], bot_ceiling=5) == 1
+
+
+class TestStaffRoleKey:
+
+    def test_plain_name(self):
+        assert staff_role_key("Archon") == "archon"
+
+    def test_strips_emoji_and_spaces(self):
+        assert staff_role_key("👑 Archon") == "archon"
+        assert staff_role_key("Archon ") == "archon"
+
+    def test_strips_punctuation_and_case(self):
+        assert staff_role_key("[MOD]") == "mod"
+        assert staff_role_key("Ro-bot") == "robot"
+
+    def test_decorated_names_match_staff_set(self):
+        from colors import STAFF_ROLE_NAMES
+        for decorated in ("👑 Archon", "Mod ", "[ADMIN]", "🤖 Robots"):
+            assert staff_role_key(decorated) in STAFF_ROLE_NAMES, f"{decorated!r} should match"
 
 
 class TestRenderSwatches:

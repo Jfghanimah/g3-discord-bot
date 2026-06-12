@@ -17,8 +17,30 @@ HEX_INPUT_RE = re.compile(r'^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$')
 HEX_PICKER_URL = "https://htmlcolorcodes.com/color-picker/"
 SWEEP_INTERVAL_HOURS = 1
 
+# New color roles are always positioned below every staff role listed here, no matter how
+# those roles are ordered among themselves — so colors stay out of the danger zone above
+# staff even if the bot's own role is temporarily mis-ranked above them. Matching ignores
+# case, emoji, spaces, and punctuation (so "👑 Archon" still matches "archon"). Unknown
+# names are ignored, so listing several spellings is harmless.
+STAFF_ROLE_NAMES = {"robot", "robots", "mod", "admin", "archon", "archons"}
+
+
+def staff_role_key(name: str) -> str:
+    """Normalize a role name for staff matching: lowercase, strip everything non-alphanumeric."""
+    return re.sub(r'[^a-z0-9]', '', name.lower())
+
 # The static example palette never changes, so its rendered image is cached on disk.
 PALETTE_CACHE = Path(__file__).parent / ".cache" / "palette.png"
+
+
+def color_role_position(staff_positions: list[int], bot_ceiling: int) -> int:
+    """
+    Pick the position for a new color role: just below the lowest staff role,
+    but never above the bot's reachable ceiling (it can't place a role above
+    itself) and never at/below @everyone (position 0).
+    """
+    target = (min(staff_positions) - 1) if staff_positions else bot_ceiling
+    return max(1, min(target, bot_ceiling))
 
 # Example hex codes for /colors — purely informational, any hex code works with /color.
 PALETTE = [
@@ -190,16 +212,28 @@ class ColorsCog(commands.Cog, name="ColorsCog"):
                     "limit. Try picking an existing color from `/colors`."
                 )
                 return
-            # Place the role directly beneath the bot's own role, which is the
-            # divider for the color band (staff above the bot, group roles below
-            # the colors). Use edit_role_positions, NOT role.edit(position=...):
-            # the latter computes the move from the local role cache, which is
-            # stale right after create_role (Discord shifts other roles
-            # server-side before the gateway reconciles), so it silently leaves
-            # the new role at the bottom. edit_role_positions sends the target
+            # Place the role below every staff role (STAFF_ROLE_NAMES), and never
+            # above the bot's own role — the bot cannot position a role above itself,
+            # so that's the hard ceiling. Use edit_role_positions, NOT
+            # role.edit(position=...): the latter computes the move from the local
+            # role cache, which is stale right after create_role (Discord shifts
+            # other roles server-side before the gateway reconciles), so it silently
+            # leaves the new role at the bottom. edit_role_positions sends the target
             # straight to Discord and lets the server reorder authoritatively.
+            matched_staff = [r for r in guild.roles if staff_role_key(r.name) in STAFF_ROLE_NAMES]
+            target = color_role_position([r.position for r in matched_staff], guild.me.top_role.position - 1)
+            # Diagnostic: dump exactly what the placement logic sees, so a misplacement
+            # can be diagnosed from logs instead of guessing.
+            logging.info(
+                "[color] positioning %s | bot_top=%r@%d | matched_staff=%s | target=%d | all_roles=%s",
+                role_name,
+                guild.me.top_role.name, guild.me.top_role.position,
+                [(r.name, r.position) for r in matched_staff],
+                target,
+                [(r.name, r.position) for r in sorted(guild.roles, key=lambda x: x.position, reverse=True)],
+            )
             try:
-                await guild.edit_role_positions({role: max(guild.me.top_role.position - 1, 1)})
+                await guild.edit_role_positions({role: target})
             except discord.HTTPException as e:
                 logging.warning(f"Failed to position color role {role_name}: {e}")
 
