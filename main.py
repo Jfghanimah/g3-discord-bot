@@ -196,6 +196,9 @@ async def build_gemini_conversation(
 # Initialize the Discord client with command support
 intents = discord.Intents.default()
 intents.message_content = True
+# Required for accurate role.members counts (color role cleanup).
+# "Server Members Intent" must also be enabled in the Discord Developer Portal.
+intents.members = True
 
 class G3Bot(commands.Bot):
     async def setup_hook(self):
@@ -207,6 +210,8 @@ class G3Bot(commands.Bot):
         logging.info("Loaded music cog.")
         await self.load_extension('minecraft')
         logging.info("Loaded minecraft cog.")
+        await self.load_extension('colors')
+        logging.info("Loaded colors cog.")
 
         try:
             if test_guild_id:
