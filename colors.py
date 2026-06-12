@@ -13,6 +13,9 @@ HEX_INPUT_RE = re.compile(r'^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$')
 HEX_PICKER_URL = "https://htmlcolorcodes.com/color-picker/"
 SWEEP_INTERVAL_HOURS = 1
 
+# /roleclean deletes ALL empty roles, not just color roles — locked to one user.
+ROLECLEAN_ALLOWED_USERNAME = "drdoughnutdude"
+
 # Example colors for /colors — purely informational, any hex code works with /color.
 PALETTE = [
     ("Red", "E74C3C"),
@@ -58,6 +61,52 @@ def normalize_hex(raw: str) -> str | None:
         hex_code = ''.join(c * 2 for c in hex_code)
     hex_code = hex_code.upper()
     return "010101" if hex_code == "000000" else hex_code
+
+
+class RolecleanConfirmView(discord.ui.View):
+    """Confirm/Cancel buttons for /roleclean — only the invoker can press them."""
+
+    def __init__(self, cog: "ColorsCog", invoker: discord.abc.User):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.invoker = invoker
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker.id:
+            await interaction.response.send_message(
+                "Only the person who ran /roleclean can confirm it.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def _finish(self, interaction: discord.Interaction, content: str):
+        for child in self.children:
+            child.disabled = True
+        self.stop()
+        await interaction.response.edit_message(content=content, view=self)
+
+    @discord.ui.button(label="Delete them", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        self.stop()
+        await interaction.response.edit_message(content="🧹 Deleting…", view=self)
+        result = await self.cog.execute_roleclean(interaction)
+        await interaction.edit_original_response(content=result, view=self)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._finish(interaction, "Roleclean cancelled — no roles were deleted.")
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(content="Roleclean confirmation timed out — no roles were deleted.", view=self)
+            except discord.HTTPException:
+                pass
 
 
 class ColorsCog(commands.Cog, name="ColorsCog"):
@@ -226,6 +275,56 @@ class ColorsCog(commands.Cog, name="ColorsCog"):
         await interaction.response.defer()
         deleted = await self._clean_guild(interaction.guild)
         await interaction.followup.send(f"🧹 Removed {deleted} empty color role{'s' if deleted != 1 else ''}.")
+
+    def _roleclean_targets(self, guild: discord.Guild) -> list[discord.Role]:
+        """All empty roles /roleclean is allowed to delete."""
+        return [
+            role for role in guild.roles
+            # Never touch @everyone, integration/booster roles, or roles the bot can't manage
+            if not (role.is_default() or role.managed or role >= guild.me.top_role)
+            and not role.members
+        ]
+
+    @app_commands.command(name="roleclean", description="[Restricted] Delete ALL server roles that have no members.")
+    async def roleclean(self, interaction: discord.Interaction):
+        if interaction.user.name != ROLECLEAN_ALLOWED_USERNAME:
+            await interaction.response.send_message(
+                f"Only @{ROLECLEAN_ALLOWED_USERNAME} can run this command.", ephemeral=True
+            )
+            return
+
+        targets = self._roleclean_targets(interaction.guild)
+        if not targets:
+            await interaction.response.send_message("🧹 No empty roles found — nothing to delete.")
+            return
+
+        names = ", ".join(f"`{r.name}`" for r in targets)
+        prompt = (
+            f"⚠️ This will delete **{len(targets)}** empty role{'s' if len(targets) != 1 else ''}:\n{names}"
+        )
+        view = RolecleanConfirmView(self, interaction.user)
+        await interaction.response.send_message(
+            prompt[:1997] + "…" if len(prompt) > 2000 else prompt, view=view
+        )
+        view.message = await interaction.original_response()
+
+    async def execute_roleclean(self, interaction: discord.Interaction) -> str:
+        """Delete all empty roles, re-checking state since the confirmation prompt."""
+        deleted, failed = [], []
+        for role in self._roleclean_targets(interaction.guild):
+            try:
+                await role.delete(reason=f"roleclean by {interaction.user}")
+                deleted.append(role.name)
+            except discord.HTTPException as e:
+                logging.warning(f"roleclean failed to delete role {role.name}: {e}")
+                failed.append(role.name)
+
+        summary = f"🧹 Deleted {len(deleted)} empty role{'s' if len(deleted) != 1 else ''}"
+        if failed:
+            summary += f" ({len(failed)} failed: {', '.join(failed)})"
+        names = ", ".join(f"`{n}`" for n in deleted)
+        message = f"{summary}\n{names}" if deleted else summary
+        return message[:1997] + "…" if len(message) > 2000 else message
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
