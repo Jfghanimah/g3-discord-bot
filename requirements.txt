@@ -3,3 +3,4 @@ python-dotenv
 discord.py[voice]
 yt-dlp
 pandas
+Pillow

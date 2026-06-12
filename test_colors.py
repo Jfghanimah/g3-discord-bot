@@ -1,4 +1,4 @@
-from colors import normalize_hex, COLOR_ROLE_RE, PALETTE
+from colors import normalize_hex, render_swatches, COLOR_ROLE_RE, PALETTE
 
 
 class TestNormalizeHex:
@@ -46,5 +46,20 @@ class TestColorRolePattern:
 class TestPalette:
 
     def test_palette_hexes_are_valid_and_canonical(self):
-        for name, hex_code in PALETTE:
-            assert normalize_hex(hex_code) == hex_code, f"{name} hex {hex_code} not canonical"
+        for hex_code in PALETTE:
+            assert normalize_hex(hex_code) == hex_code, f"hex {hex_code} not canonical"
+
+
+class TestRenderSwatches:
+
+    def test_returns_valid_png_bytes(self):
+        png = render_swatches([("FF5733", None)], columns=1)
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_renders_palette_and_labeled_entries_without_error(self):
+        # Includes pure white/black (outline path) and multi-column layout
+        entries = [(hex_code, f"#{hex_code}  3 members") for hex_code in ("FFFFFF", "010101", "3498DB")]
+        assert render_swatches(entries, columns=2)[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_empty_entries_does_not_crash(self):
+        assert render_swatches([], columns=3)[:8] == b"\x89PNG\r\n\x1a\n"

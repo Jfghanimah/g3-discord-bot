@@ -1,9 +1,13 @@
+import asyncio
+import io
 import logging
 import re
+from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
+from PIL import Image, ImageDraw, ImageFont
 
 # Color roles are identified purely by name convention: "#RRGGBB" (uppercase).
 # No state file — anything matching this pattern is considered bot-managed.
@@ -16,35 +20,70 @@ SWEEP_INTERVAL_HOURS = 1
 # /roleclean deletes ALL empty roles, not just color roles — locked to one user.
 ROLECLEAN_ALLOWED_USERNAME = "drdoughnutdude"
 
-# Example colors for /colors — purely informational, any hex code works with /color.
+# The static example palette never changes, so its rendered image is cached on disk.
+PALETTE_CACHE = Path(__file__).parent / ".cache" / "palette.png"
+
+# Example hex codes for /colors — purely informational, any hex code works with /color.
 PALETTE = [
-    ("Red", "E74C3C"),
-    ("Crimson", "DC143C"),
-    ("Salmon", "FA8072"),
-    ("Coral", "FF7F50"),
-    ("Orange", "E67E22"),
-    ("Gold", "FFD700"),
-    ("Yellow", "F1C40F"),
-    ("Lime", "32CD32"),
-    ("Green", "2ECC71"),
-    ("Emerald", "50C878"),
-    ("Teal", "1ABC9C"),
-    ("Cyan", "00FFFF"),
-    ("Sky Blue", "87CEEB"),
-    ("Blue", "3498DB"),
-    ("Royal Blue", "4169E1"),
-    ("Navy", "000080"),
-    ("Purple", "9B59B6"),
-    ("Violet", "8A2BE2"),
-    ("Magenta", "FF00FF"),
-    ("Hot Pink", "FF69B4"),
-    ("Pink", "FFC0CB"),
-    ("Lavender", "B57EDC"),
-    ("Brown", "8B4513"),
-    ("Gray", "95A5A6"),
-    ("White", "FFFFFF"),
-    ("Black", "010101"),
+    "E74C3C", "DC143C", "FA8072", "FF7F50", "E67E22", "FFD700",
+    "F1C40F", "32CD32", "2ECC71", "50C878", "1ABC9C", "00FFFF",
+    "87CEEB", "3498DB", "4169E1", "000080", "9B59B6", "8A2BE2",
+    "FF00FF", "FF69B4", "FFC0CB", "B57EDC", "8B4513", "95A5A6",
+    "FFFFFF", "010101",
 ]
+
+# ── swatch image rendering ───────────────────────────────────────────
+SWATCH = 34          # color box size (px)
+ROW_H = 46           # vertical space per entry
+PAD = 16             # outer margin
+GAP = 12             # gap between swatch and label
+BG = (43, 45, 49)    # Discord dark embed background
+FG = (220, 221, 222)
+
+
+def _load_font(size: int) -> ImageFont.FreeTypeFont:
+    for name in ("consola.ttf", "DejaVuSansMono.ttf", "cour.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def render_swatches(entries: list[tuple[str, str | None]], columns: int) -> bytes:
+    """
+    Render a grid of color boxes, each with a label to its right, to PNG bytes.
+    `entries` is a list of (hex_code, label) — label is the text drawn beside the
+    swatch (e.g. "#FF5733" or "#FF5733  3 members"); None falls back to "#hex".
+    Column width adapts to the widest label so nothing is clipped.
+    """
+    font = _load_font(20)
+    labels = [label if label is not None else f"#{hex_code}" for hex_code, label in entries]
+
+    # Size columns to the widest label in this batch
+    measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    label_w = max((measure.textlength(text, font=font) for text in labels), default=0)
+    col_w = SWATCH + GAP + int(label_w) + PAD
+
+    rows = (len(entries) + columns - 1) // columns
+    width = columns * col_w + PAD
+    height = rows * ROW_H + PAD
+
+    img = Image.new("RGB", (width, height), BG)
+    draw = ImageDraw.Draw(img)
+
+    for i, ((hex_code, _), text) in enumerate(zip(entries, labels)):
+        col, row = i % columns, i // columns
+        x = PAD + col * col_w
+        y = PAD + row * ROW_H
+        rgb = tuple(int(hex_code[j:j + 2], 16) for j in (0, 2, 4))
+        # Outline keeps near-background swatches (e.g. black, white) visible
+        draw.rectangle([x, y, x + SWATCH, y + SWATCH], fill=rgb, outline=FG, width=1)
+        draw.text((x + SWATCH + GAP, y + SWATCH / 2), text, font=font, fill=FG, anchor="lm")
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def normalize_hex(raw: str) -> str | None:
@@ -233,41 +272,59 @@ class ColorsCog(commands.Cog, name="ColorsCog"):
     async def color_autocomplete(self, interaction: discord.Interaction, current: str):
         query = current.lstrip("#").lower()
         matches = [
-            app_commands.Choice(name=f"{name} (#{hex_code})", value=hex_code)
-            for name, hex_code in PALETTE
-            if query in name.lower() or query in hex_code.lower()
+            app_commands.Choice(name=f"#{hex_code}", value=hex_code)
+            for hex_code in PALETTE
+            if query in hex_code.lower()
         ]
         return matches[:25]
+
+    def _palette_png(self) -> bytes:
+        """The example palette never changes — render once, then serve from disk cache."""
+        if PALETTE_CACHE.exists():
+            return PALETTE_CACHE.read_bytes()
+        png = render_swatches([(hex_code, None) for hex_code in PALETTE], columns=3)
+        PALETTE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        PALETTE_CACHE.write_bytes(png)
+        return png
 
     @app_commands.command(name="colors", description="List registered colors and a palette of example hex codes.")
     async def colors(self, interaction: discord.Interaction):
         guild = interaction.guild
         registered = sorted(self._color_roles(guild), key=lambda r: len(r.members), reverse=True)
 
-        embed = discord.Embed(
+        # Registered colors change as people pick them, so render on demand.
+        if registered:
+            entries = [
+                (r.name.lstrip("#"), f"#{r.name.lstrip('#')}   {len(r.members)} member{'s' if len(r.members) != 1 else ''}")
+                for r in registered
+            ]
+            reg_png = await asyncio.to_thread(render_swatches, entries, 1 if len(entries) <= 8 else 2)
+            registered_file = discord.File(io.BytesIO(reg_png), filename="registered.png")
+        else:
+            registered_file = None
+
+        palette_png = await asyncio.to_thread(self._palette_png)
+        palette_file = discord.File(io.BytesIO(palette_png), filename="palette.png")
+
+        reg_embed = discord.Embed(
             title="🎨 Server Colors",
             description=(
-                f"Pick any color with `/color <hex>` — find your perfect shade with "
-                f"[this color picker]({HEX_PICKER_URL})."
+                f"Pick any color with `/color <hex>` — grab one from the examples below "
+                f"or [a color picker]({HEX_PICKER_URL})."
             ),
             colour=discord.Colour.blurple()
         )
-
-        if registered:
-            lines = [f"`{r.name}` — {len(r.members)} member{'s' if len(r.members) != 1 else ''}"
-                     for r in registered]
-            embed.add_field(name=f"Registered ({len(registered)})", value="\n".join(lines)[:1024], inline=False)
+        if registered_file:
+            reg_embed.add_field(name=f"Registered ({len(registered)})", value="​", inline=False)
+            reg_embed.set_image(url="attachment://registered.png")
         else:
-            embed.add_field(name="Registered (0)", value="No colors yet — be the first!", inline=False)
+            reg_embed.add_field(name="Registered (0)", value="No colors yet — be the first!", inline=False)
 
-        # Palette split across inline fields to keep the embed compact
-        chunk_size = (len(PALETTE) + 2) // 3
-        for i in range(0, len(PALETTE), chunk_size):
-            chunk = PALETTE[i:i + chunk_size]
-            value = "\n".join(f"`#{hex_code}` {name}" for name, hex_code in chunk)
-            embed.add_field(name="Palette" if i == 0 else "​", value=value, inline=True)
+        palette_embed = discord.Embed(title="Example palette", colour=discord.Colour.blurple())
+        palette_embed.set_image(url="attachment://palette.png")
 
-        await interaction.response.send_message(embed=embed)
+        files = [palette_file] + ([registered_file] if registered_file else [])
+        await interaction.response.send_message(embeds=[reg_embed, palette_embed], files=files)
 
     @app_commands.command(name="colorclean", description="[Admin] Delete all color roles that have no members.")
     @app_commands.checks.has_permissions(administrator=True)
